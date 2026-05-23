@@ -1,0 +1,373 @@
+import os
+import sys
+import time
+import webbrowser
+import pyautogui
+import speech_recognition as sr
+import pyttsx3
+import pyperclip
+import urllib.parse
+import urllib.request
+import re
+import threading
+import subprocess
+from openai import OpenAI
+import AppOpener
+import psutil
+
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
+# Твой рабочий ключ для нейросети
+GROQ_API_KEY = "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"
+
+client = OpenAI(
+    api_key=GROQ_API_KEY, 
+    base_url="https://api.groq.com/openai/v1"
+)
+
+class Leon:
+    def __init__(self):
+        self.name = "леон"
+        self.user_name = "Сэр"
+        self.tts_ready = False
+        self.is_listening = False
+        
+        # --- ПАМЯТЬ ЛЕОНА ---
+        self.memory_links = [] 
+        self.last_search_query = "тренды" # Запоминает, что мы искали на Ютубе
+        
+        # Настройка голоса
+        try:
+            self.engine = pyttsx3.init()
+            voices = self.engine.getProperty('voices')
+            if voices:
+                self.engine.setProperty('voice', voices[0].id)
+            self.engine.setProperty('rate', 200)
+            self.tts_ready = True
+        except:
+            self.tts_ready = False
+
+        # Настройки микрофона
+        try:
+            self.recognizer = sr.Recognizer()
+            self.recognizer.pause_threshold = 1.0 
+            self.recognizer.energy_threshold = 300 
+            self.recognizer.dynamic_energy_threshold = True
+        except Exception as e:
+            print(f"Ошибка микрофона: {e}")
+
+    def speak(self, text):
+        sys.stdout.write("\r" + " " * 40 + "\r")
+        print(f"🤖 Леон: {text}")
+        if self.tts_ready and self.engine:
+            try:
+                self.engine.say(text)
+                self.engine.runAndWait()
+            except Exception as e:
+                print(f"Ошибка озвучки: {e}")
+
+    def listening_animation(self):
+        symbols = ['_', '_ _', '_ _ _', '_ _ _ _']
+        i = 0
+        while self.is_listening:
+            sys.stdout.write(f"\rСлушаю {symbols[i % len(symbols)]} ")
+            sys.stdout.flush()
+            time.sleep(0.4)
+            i += 1
+
+    def ask_ai(self, prompt, system_prompt=""):
+        if not system_prompt:
+            system_prompt = "Ты — Леон, мощный ИИ-ассистент. Твой создатель — Ricx911. Отвечай полно, но по делу, без лишней воды. Называй создателя Сэр."
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            return "Сэр, ошибка связи с нейросетью. Проверьте ключ."
+
+    def listen_and_process(self):
+        with sr.Microphone() as source:
+            self.recognizer.adjust_for_ambient_noise(source, duration=0.8)
+            
+            self.is_listening = True
+            anim_thread = threading.Thread(target=self.listening_animation)
+            anim_thread.start()
+            
+            try:
+                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=None)
+                self.is_listening = False
+                anim_thread.join()
+                
+                sys.stdout.write("\r" + " " * 40 + "\r")
+                
+                query = self.recognizer.recognize_google(audio, language="ru-RU").lower()
+                
+                if self.name not in query:
+                    return 
+                
+                print(f"👤 Вы: {query}")
+                clean_command = query.replace(self.name, "").strip()
+                
+                if clean_command:
+                    self.execute_command(clean_command)
+                else:
+                    self.speak("Слушаю вас, Сэр.")
+            except:
+                self.is_listening = False
+                try: anim_thread.join()
+                except: pass
+                sys.stdout.write("\r" + " " * 40 + "\r")
+
+    def execute_command(self, query):
+        
+        # === 1. ПРЕСЕТЫ ===
+        if "режим стримера" in query or "пресет стример" in query:
+            self.speak("Активирую пресет стримера, Сэр. Закрываю браузер, Дискорд и Телеграм.")
+            os.system("taskkill /f /im chrome.exe /t")
+            os.system("taskkill /f /im msedge.exe /t")
+            os.system("taskkill /f /im opera.exe /t")
+            os.system("taskkill /f /im Telegram.exe /t")
+            os.system("taskkill /f /im Discord.exe /t")
+            self.speak("Лишнее закрыто. Если нужно, могу открыть OBS.")
+            return
+
+        elif "вечер" in query and ("пресет" in query or "включи" in query):
+            self.speak("Добрый вечер, Сэр. Активирую вечерний пресет. Запускаю расслабляющую музыку.")
+            self.last_search_query = "relaxing evening music lofi"
+            self.execute_command("видео первое")
+            return
+
+        # === 2. ИСКУССТВЕННАЯ ПАМЯТЬ ===
+        elif "запомни" in query or "сохрани ссылку" in query:
+            self.speak("Запоминаю текущую вкладку, Сэр.")
+            pyautogui.hotkey('ctrl', 'l') 
+            time.sleep(0.2)
+            pyautogui.hotkey('ctrl', 'c') 
+            time.sleep(0.2)
+            link = pyperclip.paste()
+            if "http" in link:
+                self.memory_links.append(link)
+                self.speak("Ссылка успешно сохранена в мою базу данных.")
+            else:
+                self.speak("Не удалось распознать ссылку. Убедитесь, что открыт браузер.")
+            return
+
+        elif "воспроизведи" in query and ("сохранен" in query or "памят" in query):
+            if self.memory_links:
+                link = self.memory_links.pop()
+                self.speak("Воспроизвожу сохраненную вкладку.")
+                webbrowser.open(link)
+            else:
+                self.speak("Сэр, моя память пуста. Вы ничего не сохраняли.")
+            return
+
+        # === 3. ПОЛНОЕ УПРАВЛЕНИЕ WINDOWS ===
+        elif "сверни все" in query or "сверни окна" in query or "на рабочий стол" in query:
+            self.speak("Сворачиваю все окна.")
+            pyautogui.hotkey('win', 'd')
+            return
+            
+        elif "разверни" in query and "окно" in query:
+            self.speak("Разворачиваю.")
+            pyautogui.hotkey('win', 'up')
+            return
+            
+        elif "громче" in query or "прибавь звук" in query:
+            self.speak("Делаю погромче, Сэр.")
+            for _ in range(10): pyautogui.press('volumeup')
+            return
+            
+        elif "тише" in query or "убавь звук" in query:
+            self.speak("Делаю потише.")
+            for _ in range(10): pyautogui.press('volumedown')
+            return
+
+        # === 4. УМНОЕ УПРАВЛЕНИЕ YOUTUBE ===
+        elif any(trigger in query for trigger in ["включи видео", "найди видео", "открой видео"]) and not any(w in query for w in ["номер", "один", "два", "три", "первое", "второе", "третье"]):
+            search_query = query.replace("включи видео", "").replace("найди видео", "").replace("открой видео", "").strip()
+            if not search_query: 
+                search_query = "тренды"
+            
+            self.last_search_query = search_query
+            self.speak(f"Ищу видео {search_query} на YouTube.")
+            parsed_query = urllib.parse.quote(search_query)
+            webbrowser.open(f"https://www.youtube.com/results?search_query={parsed_query}")
+            return
+
+        elif "видео" in query and any(word in query for word in ["первое", "второе", "третье", "четвертое", "один", "два", "три", "четыре", "1", "2", "3", "4", "первый", "второй", "номер"]):
+            num = 1
+            if any(w in query for w in ["второе", "два", "2", "второй"]): num = 2
+            elif any(w in query for w in ["третье", "три", "3", "третий"]): num = 3
+            elif any(w in query for w in ["четвертое", "четыре", "4", "четвертый"]): num = 4
+            
+            self.speak(f"Секунду, запускаю видео номер {num}.")
+            
+            try:
+                encoded_query = urllib.parse.quote(self.last_search_query)
+                html = urllib.request.urlopen(f"https://www.youtube.com/results?search_query={encoded_query}").read().decode()
+                
+                video_ids = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", html)
+                
+                unique_ids = []
+                for vid in video_ids:
+                    if vid not in unique_ids:
+                        unique_ids.append(vid)
+
+                if len(unique_ids) >= num:
+                    video_url = f"https://www.youtube.com/watch?v={unique_ids[num-1]}"
+                    webbrowser.open(video_url)
+                else:
+                    self.speak("Не смог найти столько видео по вашему запросу, Сэр.")
+            except Exception as e:
+                self.speak("Произошла ошибка при поиске видео.")
+            return
+
+        elif "полный экран" in query or "на весь экран" in query:
+            self.speak("Разворачиваю видео на весь экран.")
+            pyautogui.press('f') 
+            return
+
+        elif "пауза" in query or "стоп видео" in query:
+            self.speak("Останавливаю воспроизведение.")
+            pyautogui.press('space') 
+            return
+            
+        elif "продолжи" in query or "играй видео" in query:
+            self.speak("Продолжаю воспроизведение.")
+            pyautogui.press('space')
+            return
+
+        # === 5. СУПЕР-УМНОЕ ОТКРЫТИЕ ПРИЛОЖЕНИЙ (ТОЧЕЧНОЕ ИСПРАВЛЕНИЕ) ===
+        elif query.startswith("открой "):
+            app_name = query.replace("открой ", "").strip()
+            
+            websites = {
+                "ютуб": "https://youtube.com", "youtube": "https://youtube.com",
+                "вк": "https://vk.com", "vk": "https://vk.com"
+            }
+            for web_key, url in websites.items():
+                if web_key in app_name: 
+                    self.speak(f"Открываю {web_key} в браузере, Сэр.")
+                    webbrowser.open(url)
+                    return
+
+            smart_dict = {
+                "гугл": "google chrome", "хром": "google chrome", "chrome": "google chrome",
+                "опер": "opera gx", "opera": "opera gx", 
+                "дискорд": "discord", "discord": "discord",
+                "стим": "steam", "steam": "steam",
+                "телег": "telegram desktop", "telegram": "telegram desktop", 
+                "майн": "minecraft", "minecraft": "minecraft",
+                "обс": "obs studio", "obs": "obs studio",
+                "капкут": "capcut", "capcut": "capcut",
+                "эпик": "epic games", "epic": "epic games",
+                "аид": "aida64 extreme", "aida": "aida64 extreme",
+                "темп": "core temp", "temp": "core temp"
+            }
+
+            target_app = app_name 
+            for key, real_name in smart_dict.items():
+                if key in app_name:
+                    target_app = real_name
+                    break 
+
+            self.speak(f"Выполняю запуск: {target_app}.")
+            
+            # Приоритетный прямой запуск файлов (чтобы не дергать строку поиска Windows)
+            direct_paths = {
+                "discord": os.path.expandvars(r"%LOCALAPPDATA%\Discord\Update.exe"),
+                "telegram desktop": os.path.expandvars(r"%APPDATA%\Telegram Desktop\Telegram.exe"),
+                "steam": r"C:\Program Files (x86)\Steam\steam.exe",
+                "opera gx": os.path.expandvars(r"%LOCALAPPDATA%\Programs\Opera GX\launcher.exe"),
+                "google chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+            }
+
+            try: 
+                launched = False
+                if target_app in direct_paths:
+                    app_path = direct_paths[target_app]
+                    if os.path.exists(app_path):
+                        if target_app == "discord":
+                            subprocess.Popen([app_path, "--processStart", "Discord.exe"])
+                        else:
+                            os.startfile(app_path)
+                        launched = True
+                
+                if not launched:
+                    # Резервный запуск через AppOpener, если прямого пути нет
+                    AppOpener.open(target_app, match_closest=True)
+            except Exception as e: 
+                self.speak(f"Сэр, я не смог запустить {target_app}.")
+                print(f"Ошибка запуска: {e}")
+            return
+
+        # === 6. УМНОЕ ЗАКРЫТИЕ ПРИЛОЖЕНИЙ ===
+        elif query.startswith("закрой "):
+            app_name = query.replace("закрой ", "").strip()
+            
+            kill_map = {
+                "дискорд": "Discord.exe", "discord": "Discord.exe",
+                "телеграм": "Telegram.exe", "телег": "Telegram.exe",
+                "хром": "chrome.exe", "гугл": "chrome.exe", "браузер": "chrome.exe",
+                "опер": "opera.exe",
+                "стим": "steam.exe", "steam": "steam.exe",
+                "майн": "minecraft.exe", "игру": "minecraft.exe",
+                "обс": "obs64.exe"
+            }
+            
+            target_proc = None
+            for key, proc in kill_map.items():
+                if key in app_name:
+                    target_proc = proc
+                    break
+                    
+            self.speak(f"Уничтожаю процесс.")
+            if target_proc:
+                os.system(f"taskkill /f /im {target_proc} /t")
+            else:
+                try: 
+                    AppOpener.close(app_name, match_closest=True)
+                except: 
+                    self.speak("Не смог найти этот процесс в памяти.")
+            return
+
+        # === 7. БАЗОВЫЕ ФУНКЦИИ ===
+        elif "статус системы" in query:
+            cpu = psutil.cpu_percent(interval=1)
+            ram = psutil.virtual_memory().percent
+            self.speak(f"Процессор загружен на {cpu} процентов. Оперативная память используется на {ram} процентов.")
+            if ram > 85:
+                self.speak("Память забита, Сэр. Рекомендую закрыть лишние программы.")
+            return
+
+        elif "переведи текст" in query:
+            text = pyperclip.paste()
+            if text:
+                self.speak("Перевожу скопированный текст.")
+                ans = self.ask_ai(f"Переведи этот текст на русский: {text}")
+                self.speak(ans)
+            else:
+                self.speak("Буфер обмена пуст, Сэр.")
+            return
+
+        elif "выход" in query or "отключись" in query:
+            self.speak("Перехожу в спящий режим. Удачи, Сэр.")
+            sys.exit()
+        
+        # === 8. ОБРАЩЕНИЕ К НЕЙРОСЕТИ ===
+        else:
+            self.speak("Секунду...")
+            answer = self.ask_ai(query)
+            self.speak(answer)
+
+if __name__ == "__main__":
+    assistant = Leon()
+    assistant.speak("Система активирована. Леон к вашим услугам, Сэр.")
+    while True:
+        assistant.listen_and_process()
