@@ -1,0 +1,222 @@
+import os
+import re
+import sys
+import time
+import subprocess
+import speech_recognition as sr
+import threading
+from groq import Groq
+
+# Жесткий фикс кодировки Windows для защиты от вылетов кириллицы
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+# 1. НАСТРОЙКИ СИСТЕМЫ И ПАПКИ ДЛЯ СКРИПТОВ
+COMMANDS_DIR = "commands"
+if not os.path.exists(COMMANDS_DIR):
+    os.makedirs(COMMANDS_DIR)
+
+# Твой рабочий API-ключ Groq встроен намертво — ГРОК РАБОТАЕТ ВСПЫШКОЙ 🔥
+GROQ_API_KEY = "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"
+
+# Инициализация распознавателя речи
+recognizer = sr.Recognizer()
+microphone = sr.Microphone()
+
+# ЖЕСТКАЯ НАСТРОЙКА СЛУХА (УБРАНО ШУМОПОДАВЛЕНИЕ И ЗАГЛОХАНИЯ) 🔥
+recognizer.energy_threshold = 300  # Фиксированная высокая чувствительность микрофона
+recognizer.dynamic_energy_threshold = False  # Запрещаем Леону самому менять громкость слуха
+recognizer.pause_threshold = 2.0  # Ждем ровно 2 секунды тишины, прежде чем обрабатывать фразу
+
+# Флаг-замок, защищающий от наложения озвучки и петель звука
+IS_BUSY = False
+
+# 2. БЕЗОПАСНАЯ ОЗВУЧКА WINDOWS (В ОТДЕЛЬНОМ ПОТОКЕ)
+def _run_speech(text):
+    try:
+        safe_text = text.replace('"', "'").replace('\n', ' ').replace('`', '')
+        cmd = f'PowerShell -Command "Add-Type –AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(\'{safe_text}\')"'
+        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+def speak(text):
+    """Озвучка ответов Леона без зависания основного ядра слуха"""
+    sys.stdout.write("\r" + " " * 60 + "\r") 
+    print(f"🤖 ЛЕОН: {text}")
+    threading.Thread(target=_run_speech, args=(text,), daemon=True).start()
+
+# 3. АНИМАЦИЯ ХАКЕРСКОЙ СТРОКИ ЗАГРУЗКИ В КОНСОЛИ
+def show_loading_frame(step, status="Слушаю..."):
+    frames = ["[==>                     ]", "[====>                   ]", "[======>                 ]", "[========>               ]", "[==========>             ]", "[============>           ]"]
+    frame = frames[step % len(frames)]
+    sys.stdout.write(f"\r🎤 СИСТЕМА ЛЕОН 1111: {frame} {status}")
+    sys.stdout.flush()
+
+# 4. СВЕРХБЫСТРЫЙ ЗАПРОС К GROQ API ДЛЯ СГЕНЕРИРОВАНИЯ Python-КОДА 🔥
+def ask_groq_for_code(user_command, error_msg=""):
+    """Запрос к Groq API для генерации идеального Python-скрипта автоматизации системы"""
+    system_prompt = (
+        "Ты — внутренний ИИ-движок автоматизации Windows для ассистента Леона. "
+        f"Напиши чистый Python код, который выполнит системное действие: '{user_command}'. "
+        "Используй библиотеки pyautogui, keyboard, ctypes, subprocess, os или браузер через webbrowser. "
+        "КРИТИЧЕСКОЕ ПРАВИЛО БЕЗОПАСНОСТИ: Категорически запрещено использовать taskkill для explorer.exe! "
+        "Если пользователь просит ЗАКРЫТЬ окно или программу — используй симуляцию горячих клавиш Alt+F4 через pyautogui или keyboard. "
+        "ПРАВИЛО ЗАПУСКА ПРОГРАММ: Чтобы запустить стороннее приложение (Discord, Telegram, Steam и т.д.), "
+        "ОБЯЗАТЕЛЬНО используй команду с системным вызовом start: subprocess.Popen('start имя_программы', shell=True). "
+        "Никогда не используй мышку, зрение и скриншоты — управляй только кодом, горячими клавишами и системными вызовами! "
+        "Выдай ТОЛЬКО рабочий код внутри тегов ```python ... ```. Без объяснений и текста!"
+    )
+    if error_msg:
+        system_prompt += f" Предыдущий твой код выдал ошибку в системе Windows: {error_msg}. Исправь код и верни заново."
+    
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",  # Топовая мощная модель от Groq
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Сделай действие: {user_command}"}
+            ],
+            temperature=0.0,  
+            max_tokens=1024
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        print(f"\n❌ Ошибка сети Groq API: {e}")
+        return ""
+
+# 5. СЛЕДУЮЩИЙ ОБРАБОТЧИК: СЛУШАНИЕ И САМООБУЧЕНИЕ (EXEC С ОТЛАДКОЙ) 🔥
+def execute_and_learn(user_command):
+    global IS_BUSY
+    clean_command = user_command.lower().replace("леон", "").strip()
+    if not clean_command:
+        IS_BUSY = False
+        return
+
+    # Фильтр на разговор/базар полностью переведен на Грока
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        check = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": f"Определи намерение. Если пользователь просто болтает, приветствует, спрашивает как дела — ответь строго TALK. Если просит сделать действие (открыть программу, закрыть окно, вкладка, звук), ответь строго CODE. Запрос: {clean_command}"},
+            ],
+            temperature=0.0
+        )
+        intent = check.choices[0].message.content.strip().upper()
+    except Exception:
+        intent = "CODE"
+
+    if "TALK" in intent:
+        try:
+            chat = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "Ты — Леон, харизматичный ИИ-компаньон. Общайся по-пацански, коротко (1-2 предложения). Без смайликов и скобок."}
+                ],
+                temperature=0.7
+            )
+            speak(chat.choices[0].message.content)
+            time.sleep(2.5) 
+            IS_BUSY = False
+            return
+        except Exception:
+            speak("Голова чет разболелась, давай потом поболтаем")
+            IS_BUSY = False
+            return
+
+    # РЕЖИМ ДЕЙСТВИЯ (CODE) С ГЕНЕРАЦИЕЙ СКРИПТОВ НА ХОДУ
+    file_name = f"{clean_command.replace(' ', '_')}.py"
+    file_path = os.path.join(COMMANDS_DIR, file_name)
+    
+    # Если команда уже выучена — запускаем локально из папки commands за миллисекунды
+    if os.path.exists(file_path):
+        speak("Выполняю")
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                exec(f.read(), globals())
+            IS_BUSY = False
+            return
+        except Exception:
+            speak("Ошибка скрипта, переобучаюсь")
+            os.remove(file_path)
+            
+    speak("Изучаю команду")
+    error_msg = ""
+    
+    # Самообучение и отладка на ходу (3 попытки)
+    for attempt in range(3):
+        ai_response = ask_groq_for_code(clean_command, error_msg)
+        if not ai_response:
+            continue
+            
+        match = re.search(r'```python(.*?)```', ai_response, re.DOTALL)
+        clean_code = match.group(1).strip() if match else ai_response.strip()
+        
+        try:
+            # Запуск сгенерированного Гроком кода в памяти процессора
+            exec(clean_code, globals())
+            
+            # Сохраняем в локальную базу данных commands навсегда
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(clean_code)
+            speak("Готово")
+            time.sleep(1.5)
+            IS_BUSY = False
+            return
+        except Exception as e:
+            error_msg = str(e)
+            print(f"\n❌ Ошибка кода (Попытка {attempt+1}): {error_msg}")
+            
+    speak("Не удалось выполнить команду")
+    IS_BUSY = False
+
+# 6. ГЛАВНЫЙ ЦИКЛ СЛУШАНИЯ МИКРОФОНА С МГНОВЕННЫМ ЗАМКОМ
+def listen_and_process():
+    global IS_BUSY
+    step = 0
+    with microphone as source:
+        print("==================================================")
+        print("        СИСТЕМА ЛЕОН 1111: ГРОК АКТИВИРОВАН МАКС  ")
+        print("==================================================")
+        speak("Грок на базе, тупняки убраны. Командуй, бро")
+        
+        while True:
+            if IS_BUSY:
+                time.sleep(0.2)
+                continue
+                
+            show_loading_frame(step, "Слушаю...")
+            step += 1
+            
+            try:
+                audio = recognizer.listen(source, timeout=1, phrase_time_limit=5)
+                if IS_BUSY: 
+                    continue
+                    
+                text = recognizer.recognize_google(audio, language="ru-RU").lower()
+                
+                if "леон" in text:
+                    IS_BUSY = True # МГНОВЕННЫЙ ЗАМОК СЛУХА ОТ ЭХО И ШУМА
+                    sys.stdout.write("\r" + " " * 60 + "\r")  
+                    print(f"🔥 Команда: {text}")
+                    execute_and_learn(text)
+                    
+            except (sr.WaitTimeoutError, sr.UnknownValueError):
+                continue
+            except Exception:
+                time.sleep(0.1)
+                continue
+
+if __name__ == "__main__":
+    try:
+        os.system("color 0A") 
+        os.system("cls" if os.name == "nt" else "clear")
+        listen_and_process()
+    except Exception as fatal_error:
+        print(f"\n КРИТИЧЕСКАЯ ОШИБКА РАБОТЫ: {fatal_error}")
+        input("\nНажмите ENTER для выхода...")
